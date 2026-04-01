@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -89,6 +90,8 @@ type Model struct {
 	preamble string
 	useDifft bool
 	gitCmd   string
+	loading  bool
+	spinner  spinner.Model
 }
 
 // SetPreamble stores the preamble text (e.g. commit metadata from git show).
@@ -103,10 +106,15 @@ func (m *Model) SetDifft(gitCmd string) {
 }
 
 func New(display DisplayMode) Model {
+	s := spinner.New(
+		spinner.WithSpinner(spinner.Dot),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("63"))),
+	)
 	return Model{
 		vp:      viewport.Model{},
 		display: display,
 		cache:   map[string]*cachedNode{},
+		spinner: s,
 	}
 }
 
@@ -129,7 +137,13 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.vp = vp
 		}
 
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		cmds = append(cmds, cmd)
+
 	case diffContentMsg:
+		m.loading = false
 		// Truncate lines to viewport width to prevent ANSI escape overflow.
 		lines := strings.Split(msg.text, "\n")
 		for i, line := range lines {
@@ -150,6 +164,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 const scrollbarWidth = 3 // 1 space + 1 scrollbar character + 1 padding
 
 func (m Model) View() string {
+	if m.loading {
+		loadingText := m.spinner.View() + " Loading diff..."
+		centered := lipgloss.Place(
+			m.Width, m.Height,
+			lipgloss.Center, lipgloss.Center,
+			loadingText,
+		)
+		return centered
+	}
 	vpView := m.vp.View()
 	scrollbar := common.RenderScrollbar(m.vp.Height(), m.vp.TotalLineCount(), m.vp.YOffset())
 	if scrollbar != "" {
@@ -171,6 +194,14 @@ func (m Model) contentWidth() int {
 	return m.Width - scrollbarWidth
 }
 
+func (m *Model) withLoading(cmd tea.Cmd) tea.Cmd {
+	if cmd == nil {
+		return nil
+	}
+	m.loading = true
+	return tea.Batch(cmd, m.spinner.Tick)
+}
+
 func (m *Model) diff() tea.Cmd {
 	if m.file != nil {
 		key := cacheKey(m.file.path, m.display)
@@ -188,9 +219,9 @@ func (m *Model) diff() tea.Cmd {
 		m.file = node
 		m.cache[key] = node
 		if m.useDifft {
-			return diffFileDifft(node, m.contentWidth(), m.display, m.gitCmd)
+			return m.withLoading(diffFileDifft(node, m.contentWidth(), m.display, m.gitCmd))
 		}
-		return diffFile(node, m.contentWidth(), m.display)
+		return m.withLoading(diffFile(node, m.contentWidth(), m.display))
 	} else if m.dir != nil {
 		key := cacheKey(m.dir.path, m.display)
 		if cached, ok := m.cache[key]; ok && cached.diff != "" {
@@ -211,9 +242,9 @@ func (m *Model) diff() tea.Cmd {
 			preamble = m.preamble
 		}
 		if m.useDifft {
-			return diffDirDifft(node, m.contentWidth(), m.display, m.gitCmd, preamble)
+			return m.withLoading(diffDirDifft(node, m.contentWidth(), m.display, m.gitCmd, preamble))
 		}
-		return diffDir(node, m.contentWidth(), m.display, preamble)
+		return m.withLoading(diffDir(node, m.contentWidth(), m.display, preamble))
 	}
 
 	return nil
@@ -284,10 +315,11 @@ func (m Model) SetFilePatch(file *gitdiff.File) (Model, tea.Cmd) {
 	}
 	m.cache[key] = m.file
 
+	m.loading = true
 	if m.useDifft {
-		return m, diffFileDifft(m.file, m.contentWidth(), m.display, m.gitCmd)
+		return m, tea.Batch(diffFileDifft(m.file, m.contentWidth(), m.display, m.gitCmd), m.spinner.Tick)
 	}
-	return m, diffFile(m.file, m.contentWidth(), m.display)
+	return m, tea.Batch(diffFile(m.file, m.contentWidth(), m.display), m.spinner.Tick)
 }
 
 func (m Model) SetDirPatch(dirPath string, files []*gitdiff.File) (Model, tea.Cmd) {
@@ -317,10 +349,11 @@ func (m Model) SetDirPatch(dirPath string, files []*gitdiff.File) (Model, tea.Cm
 	if dirPath == "/" {
 		preamble = m.preamble
 	}
+	m.loading = true
 	if m.useDifft {
-		return m, diffDirDifft(m.dir, m.contentWidth(), m.display, m.gitCmd, preamble)
+		return m, tea.Batch(diffDirDifft(m.dir, m.contentWidth(), m.display, m.gitCmd, preamble), m.spinner.Tick)
 	}
-	return m, diffDir(m.dir, m.contentWidth(), m.display, preamble)
+	return m, tea.Batch(diffDir(m.dir, m.contentWidth(), m.display, preamble), m.spinner.Tick)
 }
 
 func (m *Model) GoToTop() {
