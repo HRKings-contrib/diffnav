@@ -233,8 +233,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		msg.buf.WriteString(msg.chunk)
 
 		if isCurrentView {
-			m.loading = false   // show content instead of spinner
-			m.streaming = true  // indicate more data is coming
+			m.loading = false  // show content instead of spinner
+			m.streaming = true // indicate more data is coming
 			m.vp.SetContent(msg.buf.String())
 		}
 

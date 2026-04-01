@@ -19,8 +19,8 @@ type UIConfig struct {
 	ColorFileNames  bool   `yaml:"colorFileNames"` // Color filenames by git status (default: true)
 	ShowDiffStats   bool   `yaml:"showDiffStats"`  // Show the amount of lines added / removed next to the file
 	SideBySide      bool   `yaml:"sideBySide"`     // Side-by-side diff view (default: true) — kept for backward compat
-	DeltaDisplay    string `yaml:"deltaDisplay"`    // Display mode for delta: "side-by-side" (default), "inline"
-	DifftDisplay    string `yaml:"difftDisplay"`    // Display mode for difft: "side-by-side" (default), "inline", "side-by-side-show-both"
+	DeltaDisplay    string `yaml:"deltaDisplay"`   // Display mode for delta: "side-by-side" (default), "inline"
+	DifftDisplay    string `yaml:"difftDisplay"`   // Display mode for difft: "side-by-side" (default), "inline", "side-by-side-show-both"
 }
 
 type WatchConfig struct {
