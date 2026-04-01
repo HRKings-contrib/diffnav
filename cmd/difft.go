@@ -68,8 +68,7 @@ diffnav difft --watch --cmd "git diff HEAD"
 
 		zone.NewGlobal()
 
-		log.SetOutput(os.Stderr)
-		log.SetLevel(log.FatalLevel)
+		defer setupLogging()()
 
 		// Warn if stdin is piped (difft mode runs its own git command)
 		stat, sErr := os.Stdin.Stat()

@@ -370,15 +370,17 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diffViewer, cmd = m.diffViewer.Update(msg)
 				cmds = append(cmds, cmd)
 			} else {
-				m.fileTree.Update(msg)
-				cmds = append(cmds, cmd)
+				var ftCmd tea.Cmd
+				_, ftCmd = m.fileTree.Update(msg)
+				cmds = append(cmds, ftCmd)
 			}
 		}
 	default:
 		m.diffViewer, cmd = m.diffViewer.Update(msg)
 		cmds = append(cmds, cmd)
-		m.fileTree.Update(msg)
-		cmds = append(cmds, cmd)
+		var ftCmd tea.Cmd
+		_, ftCmd = m.fileTree.Update(msg)
+		cmds = append(cmds, ftCmd)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -765,6 +767,17 @@ func (m mainModel) viewHeader() string {
 				subject = utils.TruncateString(subject, maxSubjectWidth)
 				headerParts = headerParts + " " + subject
 			}
+		}
+	}
+
+	// Streaming indicator on the right side
+	if m.diffViewer.IsStreaming() {
+		indicator := m.diffViewer.SpinnerView() + " streaming"
+		indicatorWidth := lipgloss.Width(indicator)
+		usedWidth := lipgloss.Width(headerParts)
+		gap := m.width - usedWidth - indicatorWidth
+		if gap > 0 {
+			headerParts = headerParts + strings.Repeat(" ", gap) + indicator
 		}
 	}
 

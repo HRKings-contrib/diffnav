@@ -16,7 +16,6 @@ import (
 	"charm.land/fang/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/log/v2"
-	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone/v2"
 
@@ -125,40 +124,7 @@ func init() {
 
 		zone.NewGlobal()
 
-		if os.Getenv("DEBUG") == "true" {
-			var fileErr error
-			logFile, fileErr := os.OpenFile("debug.log",
-				os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o666)
-			if fileErr != nil {
-				fmt.Println("Error opening debug.log:", fileErr)
-				os.Exit(1)
-			}
-			defer func() {
-				if err := logFile.Close(); err != nil {
-					log.Fatal("failed closing log file", "err", err)
-				}
-			}()
-
-			if fileErr == nil {
-				log.SetOutput(logFile)
-				log.SetTimeFormat(time.Kitchen)
-				log.SetReportCaller(true)
-				log.SetLevel(log.DebugLevel)
-
-				log.SetOutput(logFile)
-				log.SetColorProfile(colorprofile.TrueColor)
-				wd, err := os.Getwd()
-				if err != nil {
-					fmt.Println("Error getting current working dir", err)
-					os.Exit(1)
-				}
-				log.Debug("🚀 Starting diffnav", "logFile",
-					wd+string(os.PathSeparator)+logFile.Name())
-			}
-		} else {
-			log.SetOutput(os.Stderr)
-			log.SetLevel(log.FatalLevel)
-		}
+		defer setupLogging()()
 
 		var input string
 		if watchFlag {
