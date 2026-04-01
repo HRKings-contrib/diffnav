@@ -110,6 +110,9 @@ func New(input string, cfg config.Config) mainModel {
 	m.fileTree = filetree.New(cfg)
 	m.fileTree.SetSize(cfg.UI.FileTreeWidth, 0)
 	m.diffViewer = diffviewer.New(cfg.UI.SideBySide)
+	if cfg.Difft.Enabled {
+		m.diffViewer.SetDifft(cfg.Difft.GitCmd)
+	}
 	m.help = help.New()
 	m.help.SetKeys(KeyGroups())
 

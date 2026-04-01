@@ -45,11 +45,19 @@ type Model struct {
 	cache      nodeCache
 	sideBySide bool
 	preamble   string
+	useDifft   bool
+	gitCmd     string
 }
 
 // SetPreamble stores the preamble text (e.g. commit metadata from git show).
 func (m *Model) SetPreamble(preamble string) {
 	m.preamble = preamble
+}
+
+// SetDifft configures the model to use difftastic instead of delta for rendering.
+func (m *Model) SetDifft(gitCmd string) {
+	m.useDifft = true
+	m.gitCmd = gitCmd
 }
 
 func New(sideBySide bool) Model {
@@ -137,6 +145,9 @@ func (m *Model) diff() tea.Cmd {
 		}
 		m.file = node
 		m.cache[key] = node
+		if m.useDifft {
+			return diffFileDifft(node, m.contentWidth(), m.sideBySide, m.gitCmd)
+		}
 		return diffFile(node, m.contentWidth(), m.sideBySide)
 	} else if m.dir != nil {
 		key := cacheKey(m.dir.path, m.sideBySide)
@@ -156,6 +167,9 @@ func (m *Model) diff() tea.Cmd {
 		preamble := ""
 		if m.dir.path == "/" {
 			preamble = m.preamble
+		}
+		if m.useDifft {
+			return diffDirDifft(node, m.contentWidth(), m.sideBySide, m.gitCmd, preamble)
 		}
 		return diffDir(node, m.contentWidth(), m.sideBySide, preamble)
 	}
@@ -228,6 +242,9 @@ func (m Model) SetFilePatch(file *gitdiff.File) (Model, tea.Cmd) {
 	}
 	m.cache[key] = m.file
 
+	if m.useDifft {
+		return m, diffFileDifft(m.file, m.contentWidth(), m.sideBySide, m.gitCmd)
+	}
 	return m, diffFile(m.file, m.contentWidth(), m.sideBySide)
 }
 
@@ -257,6 +274,9 @@ func (m Model) SetDirPatch(dirPath string, files []*gitdiff.File) (Model, tea.Cm
 	preamble := ""
 	if dirPath == "/" {
 		preamble = m.preamble
+	}
+	if m.useDifft {
+		return m, diffDirDifft(m.dir, m.contentWidth(), m.sideBySide, m.gitCmd, preamble)
 	}
 	return m, diffDir(m.dir, m.contentWidth(), m.sideBySide, preamble)
 }
@@ -348,6 +368,101 @@ func diffDir(dir *cachedNode, width int, sideBySide bool, preamble string) tea.C
 		}
 
 		text := string(out)
+		if preamble != "" {
+			text = renderPreamble(preamble) + "\n" + text
+		}
+		return diffContentMsg{cacheKey: key, text: text}
+	}
+}
+
+func diffFileDifft(node *cachedNode, width int, sideBySide bool, gitCmd string) tea.Cmd {
+	if width == 0 || node == nil || len(node.files) != 1 {
+		return nil
+	}
+
+	file := node.files[0]
+	key := cacheKey(node.path, sideBySide)
+	return func() tea.Msg {
+		display := "inline"
+		if sideBySide && !file.IsNew && !file.IsDelete {
+			display = "side-by-side"
+		}
+
+		pathArgs := ""
+		if file.OldName != "" && file.NewName != "" && file.OldName != file.NewName {
+			pathArgs = fmt.Sprintf(" -- %q %q", file.OldName, file.NewName)
+		} else {
+			pathArgs = fmt.Sprintf(" -- %q", node.path)
+		}
+
+		cmd := exec.Command("sh", "-c", gitCmd+pathArgs)
+		cmd.Env = append(os.Environ(),
+			"GIT_EXTERNAL_DIFF=difft",
+			fmt.Sprintf("DFT_WIDTH=%d", width),
+			fmt.Sprintf("DFT_DISPLAY=%s", display),
+			"DFT_COLOR=always",
+		)
+		out, err := cmd.Output()
+		if err != nil {
+			return common.ErrMsg{Err: err}
+		}
+		return diffContentMsg{cacheKey: key, text: string(out)}
+	}
+}
+
+func diffDirDifft(dir *cachedNode, width int, sideBySide bool, gitCmd string, preamble string) tea.Cmd {
+	if width == 0 || dir == nil {
+		return nil
+	}
+	key := cacheKey(dir.path, sideBySide)
+	return func() tea.Msg {
+		display := "inline"
+		if sideBySide {
+			display = "side-by-side"
+		}
+
+		env := append(os.Environ(),
+			"GIT_EXTERNAL_DIFF=difft",
+			fmt.Sprintf("DFT_WIDTH=%d", width),
+			fmt.Sprintf("DFT_DISPLAY=%s", display),
+			"DFT_COLOR=always",
+		)
+
+		var text string
+		if dir.path == "/" {
+			// Root: run the full git command
+			cmd := exec.Command("sh", "-c", gitCmd)
+			cmd.Env = env
+			out, err := cmd.Output()
+			if err != nil {
+				return common.ErrMsg{Err: err}
+			}
+			text = string(out)
+		} else {
+			// Subdirectory: run per-file and concatenate
+			var sb strings.Builder
+			for _, file := range dir.files {
+				filePath := file.NewName
+				if filePath == "" {
+					filePath = file.OldName
+				}
+				pathArgs := ""
+				if file.OldName != "" && file.NewName != "" && file.OldName != file.NewName {
+					pathArgs = fmt.Sprintf(" -- %q %q", file.OldName, file.NewName)
+				} else {
+					pathArgs = fmt.Sprintf(" -- %q", filePath)
+				}
+				cmd := exec.Command("sh", "-c", gitCmd+pathArgs)
+				cmd.Env = env
+				out, err := cmd.Output()
+				if err != nil {
+					continue
+				}
+				sb.Write(out)
+			}
+			text = sb.String()
+		}
+
 		if preamble != "" {
 			text = renderPreamble(preamble) + "\n" + text
 		}

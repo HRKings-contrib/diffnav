@@ -27,9 +27,15 @@ type WatchConfig struct {
 	Interval time.Duration
 }
 
+type DifftConfig struct {
+	Enabled bool
+	GitCmd  string
+}
+
 type Config struct {
 	UI    UIConfig    `yaml:"ui"`
 	Watch WatchConfig `yaml:"-"`
+	Difft DifftConfig `yaml:"-"`
 }
 
 func DefaultConfig() Config {
