@@ -49,6 +49,10 @@ diffnav difft --watch --cmd "git diff HEAD"
 		if err != nil {
 			log.Fatal("Cannot parse the side-by-side flag", err)
 		}
+		showBothFlag, err := cmd.Flags().GetBool("show-both")
+		if err != nil {
+			log.Fatal("Cannot parse the show-both flag", err)
+		}
 		unifiedFlag, err := cmd.Flags().GetBool("unified")
 		if err != nil {
 			log.Fatal("Cannot parse the unified flag", err)
@@ -92,9 +96,11 @@ diffnav difft --watch --cmd "git diff HEAD"
 		}
 
 		if unifiedFlag {
-			cfg.UI.SideBySide = false
+			cfg.UI.DifftDisplay = "inline"
+		} else if showBothFlag {
+			cfg.UI.DifftDisplay = "side-by-side-show-both"
 		} else if sideBySideFlag {
-			cfg.UI.SideBySide = true
+			cfg.UI.DifftDisplay = "side-by-side"
 		}
 
 		cfg.Watch = config.WatchConfig{
@@ -118,6 +124,7 @@ diffnav difft --watch --cmd "git diff HEAD"
 func init() {
 	difftCmd.Flags().String("cmd", "git diff", "Git diff command to run")
 	difftCmd.Flags().BoolP("side-by-side", "s", false, "Force side-by-side diff view")
+	difftCmd.Flags().BoolP("show-both", "b", false, "Force side-by-side-show-both diff view (always two columns)")
 	difftCmd.Flags().BoolP("unified", "u", false, "Force unified (inline) diff view")
 	difftCmd.Flags().BoolP("watch", "w", false, "Watch mode: periodically re-run the diff command and refresh")
 	difftCmd.Flags().Duration("watch-interval", 2*time.Second, "Interval between watch refreshes")

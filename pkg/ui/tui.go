@@ -102,14 +102,14 @@ func New(input string, cfg config.Config) mainModel {
 		activePanel:       FileTreePanel,
 		config:            cfg,
 		iconStyle:         cfg.UI.Icons,
-		sideBySide:        cfg.UI.SideBySide,
+		sideBySide:        cfg.ResolveDisplay(cfg.Difft.Enabled) != "inline",
 		watchEnabled:      cfg.Watch.Enabled,
 		watchCmd:          cfg.Watch.Cmd,
 		watchInterval:     cfg.Watch.Interval,
 	}
 	m.fileTree = filetree.New(cfg)
 	m.fileTree.SetSize(cfg.UI.FileTreeWidth, 0)
-	m.diffViewer = diffviewer.New(cfg.UI.SideBySide)
+	m.diffViewer = diffviewer.New(diffviewer.ParseDisplayMode(cfg.ResolveDisplay(cfg.Difft.Enabled)))
 	if cfg.Difft.Enabled {
 		m.diffViewer.SetDifft(cfg.Difft.GitCmd)
 	}

@@ -208,9 +208,9 @@ func init() {
 
 		// Override config with CLI flags if specified
 		if unifiedFlag {
-			cfg.UI.SideBySide = false
+			cfg.UI.DeltaDisplay = "inline"
 		} else if sideBySideFlag {
-			cfg.UI.SideBySide = true
+			cfg.UI.DeltaDisplay = "side-by-side"
 		}
 
 		cfg.Watch = config.WatchConfig{

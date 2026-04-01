@@ -18,7 +18,9 @@ type UIConfig struct {
 	Icons           string `yaml:"icons"`          // "nerd-fonts-status" (default), "nerd-fonts-simple", "nerd-fonts-filetype", "nerd-fonts-full", "unicode", "ascii"
 	ColorFileNames  bool   `yaml:"colorFileNames"` // Color filenames by git status (default: true)
 	ShowDiffStats   bool   `yaml:"showDiffStats"`  // Show the amount of lines added / removed next to the file
-	SideBySide      bool   `yaml:"sideBySide"`     // Side-by-side diff view (default: true)
+	SideBySide      bool   `yaml:"sideBySide"`     // Side-by-side diff view (default: true) — kept for backward compat
+	DeltaDisplay    string `yaml:"deltaDisplay"`    // Display mode for delta: "side-by-side" (default), "inline"
+	DifftDisplay    string `yaml:"difftDisplay"`    // Display mode for difft: "side-by-side" (default), "inline", "side-by-side-show-both"
 }
 
 type WatchConfig struct {
@@ -50,8 +52,31 @@ func DefaultConfig() Config {
 			ColorFileNames:  true,
 			SideBySide:      true,
 			ShowDiffStats:   true,
+			DeltaDisplay:    "side-by-side",
+			DifftDisplay:    "side-by-side",
 		},
 	}
+}
+
+// ResolveDisplay returns the effective display mode string for the active diff tool.
+// It respects the legacy SideBySide bool when DeltaDisplay/DifftDisplay are not explicitly set.
+func (c *Config) ResolveDisplay(difft bool) string {
+	if difft {
+		if c.UI.DifftDisplay != "" {
+			return c.UI.DifftDisplay
+		}
+		if c.UI.SideBySide {
+			return "side-by-side"
+		}
+		return "inline"
+	}
+	if c.UI.DeltaDisplay != "" {
+		return c.UI.DeltaDisplay
+	}
+	if c.UI.SideBySide {
+		return "side-by-side"
+	}
+	return "inline"
 }
 
 func getConfigFilePath() string {

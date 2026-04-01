@@ -45,6 +45,19 @@ func (d DisplayMode) IsSideBySide() bool {
 	return d != DisplayInline
 }
 
+// ParseDisplayMode converts a string to a DisplayMode.
+// Accepts: "inline", "side-by-side", "side-by-side-show-both".
+func ParseDisplayMode(s string) DisplayMode {
+	switch s {
+	case "side-by-side":
+		return DisplaySideBySide
+	case "side-by-side-show-both":
+		return DisplaySideBySideShowBoth
+	default:
+		return DisplayInline
+	}
+}
+
 type cachedNode struct {
 	path      string
 	files     []*gitdiff.File
@@ -89,11 +102,7 @@ func (m *Model) SetDifft(gitCmd string) {
 	m.gitCmd = gitCmd
 }
 
-func New(sideBySide bool) Model {
-	display := DisplayInline
-	if sideBySide {
-		display = DisplaySideBySide
-	}
+func New(display DisplayMode) Model {
 	return Model{
 		vp:      viewport.Model{},
 		display: display,
