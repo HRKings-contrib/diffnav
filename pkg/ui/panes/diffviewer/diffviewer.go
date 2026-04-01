@@ -434,6 +434,35 @@ func diffDir(dir *cachedNode, width int, display DisplayMode, preamble string) t
 	}
 }
 
+func filePathArgs(file *gitdiff.File) []string {
+	if file.OldName != "" && file.NewName != "" && file.OldName != file.NewName {
+		return []string{file.OldName, file.NewName}
+	}
+	name := file.NewName
+	if name == "" {
+		name = file.OldName
+	}
+	return []string{name}
+}
+
+func difftEnv(width int, dftDisplay string) []string {
+	return append(os.Environ(),
+		"GIT_EXTERNAL_DIFF=difft",
+		fmt.Sprintf("DFT_WIDTH=%d", width),
+		fmt.Sprintf("DFT_DISPLAY=%s", dftDisplay),
+		"DFT_COLOR=always",
+	)
+}
+
+func buildDifftCmd(gitCmd string, width int, dftDisplay string, pathArgs []string) *exec.Cmd {
+	args := strings.Fields(gitCmd)
+	args = append(args, "--")
+	args = append(args, pathArgs...)
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Env = difftEnv(width, dftDisplay)
+	return cmd
+}
+
 func diffFileDifft(node *cachedNode, width int, display DisplayMode, gitCmd string) tea.Cmd {
 	if width == 0 || node == nil || len(node.files) != 1 {
 		return nil
@@ -447,20 +476,7 @@ func diffFileDifft(node *cachedNode, width int, display DisplayMode, gitCmd stri
 			dftDisplay = "inline"
 		}
 
-		pathArgs := ""
-		if file.OldName != "" && file.NewName != "" && file.OldName != file.NewName {
-			pathArgs = fmt.Sprintf(" -- %q %q", file.OldName, file.NewName)
-		} else {
-			pathArgs = fmt.Sprintf(" -- %q", node.path)
-		}
-
-		cmd := exec.Command("sh", "-c", gitCmd+pathArgs)
-		cmd.Env = append(os.Environ(),
-			"GIT_EXTERNAL_DIFF=difft",
-			fmt.Sprintf("DFT_WIDTH=%d", width),
-			fmt.Sprintf("DFT_DISPLAY=%s", dftDisplay),
-			"DFT_COLOR=always",
-		)
+		cmd := buildDifftCmd(gitCmd, width, dftDisplay, filePathArgs(file))
 		out, err := cmd.Output()
 		if err != nil {
 			return common.ErrMsg{Err: err}
@@ -477,48 +493,24 @@ func diffDirDifft(dir *cachedNode, width int, display DisplayMode, gitCmd string
 	return func() tea.Msg {
 		dftDisplay := display.DifftDisplayString()
 
-		env := append(os.Environ(),
-			"GIT_EXTERNAL_DIFF=difft",
-			fmt.Sprintf("DFT_WIDTH=%d", width),
-			fmt.Sprintf("DFT_DISPLAY=%s", dftDisplay),
-			"DFT_COLOR=always",
-		)
-
-		var text string
+		var paths []string
 		if dir.path == "/" {
-			// Root: run the full git command
-			cmd := exec.Command("sh", "-c", gitCmd)
-			cmd.Env = env
-			out, err := cmd.Output()
-			if err != nil {
-				return common.ErrMsg{Err: err}
-			}
-			text = string(out)
+			// Root: no path filter, diff everything
 		} else {
-			// Subdirectory: run per-file and concatenate
-			var sb strings.Builder
+			// Subdirectory: collect all file paths for a single invocation
+			paths = make([]string, 0, len(dir.files))
 			for _, file := range dir.files {
-				filePath := file.NewName
-				if filePath == "" {
-					filePath = file.OldName
-				}
-				pathArgs := ""
-				if file.OldName != "" && file.NewName != "" && file.OldName != file.NewName {
-					pathArgs = fmt.Sprintf(" -- %q %q", file.OldName, file.NewName)
-				} else {
-					pathArgs = fmt.Sprintf(" -- %q", filePath)
-				}
-				cmd := exec.Command("sh", "-c", gitCmd+pathArgs)
-				cmd.Env = env
-				out, err := cmd.Output()
-				if err != nil {
-					continue
-				}
-				sb.Write(out)
+				paths = append(paths, filePathArgs(file)...)
 			}
-			text = sb.String()
 		}
 
+		cmd := buildDifftCmd(gitCmd, width, dftDisplay, paths)
+		out, err := cmd.Output()
+		if err != nil {
+			return common.ErrMsg{Err: err}
+		}
+
+		text := string(out)
 		if preamble != "" {
 			text = renderPreamble(preamble) + "\n" + text
 		}
