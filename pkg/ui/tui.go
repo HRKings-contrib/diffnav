@@ -93,6 +93,7 @@ type mainModel struct {
 	watchInterval     time.Duration
 	pendingCursorPath string
 	watchInFlight     bool
+	invalidatedPaths  []string // file paths changed in last watch refresh (consumed by fileTreeMsg)
 }
 
 func New(input string, cfg config.Config) mainModel {
@@ -327,7 +328,24 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 		m.pendingCursorPath = m.fileTree.CurrNodePath()
-		m.diffViewer.ClearCache()
+
+		// Compare old vs new file lists for incremental invalidation
+		newFiles, _, _ := gitdiff.Parse(strings.NewReader(msg.output + "\n"))
+		sortFiles(newFiles)
+		changed, added, removed := diffFileSets(m.files, newFiles)
+		invalidated := append(append(changed, added...), removed...)
+
+		if len(m.files) == 0 || len(invalidated) >= len(newFiles)+len(removed) {
+			// First load or everything changed — full rebuild
+			m.diffViewer.ClearCache()
+			m.invalidatedPaths = nil
+		} else if len(invalidated) > 0 {
+			m.diffViewer.InvalidateFiles(invalidated)
+			m.invalidatedPaths = invalidated
+		} else {
+			m.invalidatedPaths = nil
+		}
+
 		m.input = msg.output
 		cmds = append(cmds, m.fetchFileTree, m.scheduleWatchTick())
 		return m, tea.Batch(cmds...)
@@ -342,7 +360,15 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.commitBranch = msg.branch
 		m.cachedMeta = m.parseCommitMeta()
 		m.diffViewer.SetPreamble(m.preamble)
-		m.diffViewer, cmd = m.diffViewer.SetDirPatch("/", m.fileTree.GetCurrNodeDesendantDiffs())
+
+		if len(m.invalidatedPaths) > 0 && m.diffViewer.HasFileCache() {
+			// Incremental watch refresh: scoped difft for changed files only
+			m.diffViewer, cmd = m.diffViewer.RunScopedRefresh(m.invalidatedPaths, m.files)
+		} else {
+			// Full rebuild (first load or full ClearCache)
+			m.diffViewer, cmd = m.diffViewer.SetDirPatch("/", m.fileTree.GetCurrNodeDesendantDiffs())
+		}
+		m.invalidatedPaths = nil
 		cmds = append(cmds, cmd)
 		if m.pendingCursorPath != "" {
 			m.fileTree.SetCursorByPath(m.pendingCursorPath)

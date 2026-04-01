@@ -44,6 +44,29 @@ func sortFiles(files []*gitdiff.File) {
 	})
 }
 
+// diffFileSets compares old and new file lists and returns which files changed, were added, or removed.
+func diffFileSets(oldFiles, newFiles []*gitdiff.File) (changed, added, removed []string) {
+	oldMap := make(map[string]string, len(oldFiles))
+	for _, f := range oldFiles {
+		oldMap[filenode.GetFileName(f)] = f.String()
+	}
+	for _, f := range newFiles {
+		name := filenode.GetFileName(f)
+		if oldDiff, ok := oldMap[name]; ok {
+			if f.String() != oldDiff {
+				changed = append(changed, name)
+			}
+			delete(oldMap, name)
+		} else {
+			added = append(added, name)
+		}
+	}
+	for name := range oldMap {
+		removed = append(removed, name)
+	}
+	return
+}
+
 func relativeTime(t time.Time) string {
 	d := time.Since(t)
 	switch {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -93,11 +94,12 @@ type difftChunk struct {
 
 // difftStreamMsg carries a chunk of streamed difft output.
 type difftStreamMsg struct {
-	ch       <-chan difftChunk // channel for subsequent chunks
-	cacheKey string
-	chunk    string           // text for this chunk
-	done     bool             // true when stream finished
-	buf      *strings.Builder // accumulated output (owned by this stream)
+	ch         <-chan difftChunk // channel for subsequent chunks
+	cacheKey   string
+	chunk      string           // text for this chunk
+	done       bool             // true when stream finished
+	buf        *strings.Builder // accumulated output (owned by this stream)
+	generation uint64           // generation when stream was spawned
 }
 
 type Model struct {
@@ -116,11 +118,15 @@ type Model struct {
 	inflight       map[string]bool // keys with active streams (prevents duplicate spawns)
 	spinner        spinner.Model
 	difftFileCache map[string]string // file path → difft output section (from root)
+	generation     uint64            // incremented on ClearCache/InvalidateFiles to reject stale streams
 
 	// Incremental root stream parsing state
 	rootParsed     int    // bytes of root buffer already scanned for headers
 	rootLastPath   string // file path from the most recent header found
 	rootLastOffset int    // byte offset where the current section starts
+
+	// Scoped refresh state (for incremental watch updates)
+	scopedFiles []*gitdiff.File // all files, used by ReconstructRoot after scoped stream
 }
 
 // SetPreamble stores the preamble text (e.g. commit metadata from git show).
@@ -183,8 +189,17 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.vp.SetContent(diff)
 
 	case difftStreamMsg:
+		// Stale stream from a previous generation — drain but ignore
+		if msg.generation != m.generation {
+			if !msg.done {
+				cmds = append(cmds, readNextChunk(msg.ch, msg.cacheKey, msg.buf, msg.generation))
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		isCurrentView := m.loadingKey == msg.cacheKey
-		isRootStream := m.useDifft && strings.HasPrefix(msg.cacheKey, "/")
+		isRootOrScoped := m.useDifft && (strings.HasPrefix(msg.cacheKey, "/"))
+		isScopedStream := strings.Contains(msg.cacheKey, "/:scoped:")
 
 		if msg.done {
 			delete(m.inflight, msg.cacheKey)
@@ -194,9 +209,13 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			if node, ok := m.cache[msg.cacheKey]; ok {
 				node.diff = diff
 			}
-			// Flush last file section from root stream
-			if isRootStream {
+			// Flush last file section from root/scoped stream
+			if isRootOrScoped {
 				m.flushRootLastSection(text)
+				if isScopedStream {
+					// Scoped refresh done — reconstruct root view from updated cache
+					m.reconstructRoot()
+				}
 				// If a non-root view is waiting, render it from the fresh cache
 				if !isCurrentView && m.loading {
 					m.renderFromFileCache()
@@ -219,8 +238,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.vp.SetContent(msg.buf.String())
 		}
 
-		// Incrementally parse root stream for per-file sections
-		if isRootStream {
+		// Incrementally parse root/scoped stream for per-file sections
+		if isRootOrScoped {
 			if m.rootParsed == 0 {
 				// Log first few lines to diagnose header format
 				sample := msg.chunk
@@ -237,7 +256,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 		// Always drain the channel to avoid goroutine leaks
-		cmds = append(cmds, readNextChunk(msg.ch, msg.cacheKey, msg.buf))
+		cmds = append(cmds, readNextChunk(msg.ch, msg.cacheKey, msg.buf, msg.generation))
 	}
 
 	return m, tea.Batch(cmds...)
@@ -312,7 +331,7 @@ func (m *Model) diff() tea.Cmd {
 		m.file = node
 		m.cache[key] = node
 		if m.useDifft {
-			return m.withLoading(key, diffFileDifft(node, m.contentWidth(), m.display, m.gitCmd))
+			return m.withLoading(key, diffFileDifft(node, m.contentWidth(), m.display, m.gitCmd, m.generation))
 		}
 		return m.withLoading(key, diffFile(node, m.contentWidth(), m.display))
 	} else if m.dir != nil {
@@ -339,7 +358,7 @@ func (m *Model) diff() tea.Cmd {
 			preamble = m.preamble
 		}
 		if m.useDifft {
-			return m.withLoading(key, diffDirDifft(node, m.contentWidth(), m.display, m.gitCmd, preamble))
+			return m.withLoading(key, diffDirDifft(node, m.contentWidth(), m.display, m.gitCmd, preamble, m.generation))
 		}
 		return m.withLoading(key, diffDir(node, m.contentWidth(), m.display, preamble))
 	}
@@ -463,7 +482,7 @@ func (m Model) SetFilePatch(file *gitdiff.File) (Model, tea.Cmd) {
 	m.inflight[key] = true
 	log.Debug("SetFilePatch spawning", "key", key)
 	if m.useDifft {
-		return m, tea.Batch(diffFileDifft(m.file, m.contentWidth(), m.display, m.gitCmd), m.spinner.Tick)
+		return m, tea.Batch(diffFileDifft(m.file, m.contentWidth(), m.display, m.gitCmd, m.generation), m.spinner.Tick)
 	}
 	return m, tea.Batch(diffFile(m.file, m.contentWidth(), m.display), m.spinner.Tick)
 }
@@ -543,7 +562,7 @@ func (m Model) SetDirPatch(dirPath string, files []*gitdiff.File) (Model, tea.Cm
 	m.inflight[key] = true
 	log.Debug("SetDirPatch spawning", "key", key)
 	if m.useDifft {
-		return m, tea.Batch(diffDirDifft(m.dir, m.contentWidth(), m.display, m.gitCmd, preamble), m.spinner.Tick)
+		return m, tea.Batch(diffDirDifft(m.dir, m.contentWidth(), m.display, m.gitCmd, preamble, m.generation), m.spinner.Tick)
 	}
 	return m, tea.Batch(diffDir(m.dir, m.contentWidth(), m.display, preamble), m.spinner.Tick)
 }
@@ -648,6 +667,56 @@ func (m *Model) flushRootLastSection(fullText string) {
 	m.rootParsed = 0
 	m.rootLastPath = ""
 	m.rootLastOffset = 0
+}
+
+// HasFileCache returns true if there are cached per-file difft sections available.
+func (m Model) HasFileCache() bool {
+	return len(m.difftFileCache) > 0
+}
+
+// RunScopedRefresh launches a scoped difft stream for only the changed file paths,
+// merging results into the existing difftFileCache.
+func (m Model) RunScopedRefresh(changedPaths []string, allFiles []*gitdiff.File) (Model, tea.Cmd) {
+	m.scopedFiles = allFiles
+	scopedKey := "/:scoped:" + m.display.DifftDisplayString()
+	m.inflight[scopedKey] = true
+	m.loading = true
+	m.loadingKey = scopedKey
+
+	dftDisplay := m.display.DifftDisplayString()
+	cmd := streamDifftCmd(m.gitCmd, m.contentWidth(), dftDisplay, changedPaths, scopedKey, "", m.generation)
+	return m, tea.Batch(cmd, m.spinner.Tick)
+}
+
+// reconstructRoot assembles the root diff view from difftFileCache entries in file order.
+func (m *Model) reconstructRoot() {
+	if len(m.scopedFiles) == 0 {
+		return
+	}
+	var buf strings.Builder
+	if m.preamble != "" {
+		buf.WriteString(renderPreamble(m.preamble))
+		buf.WriteByte('\n')
+	}
+	var added, deleted int64
+	for _, f := range m.scopedFiles {
+		fname := filenode.GetFileName(f)
+		if section, ok := m.difftFileCache[fname]; ok {
+			buf.WriteString(section)
+		}
+		na, nd := filenode.DiffStats(f)
+		added += na
+		deleted += nd
+	}
+	diff := truncateLines(buf.String(), m.vp.Width())
+	rootKey := cacheKey("/", m.display)
+	m.cache[rootKey] = &cachedNode{
+		path:      "/",
+		files:     m.scopedFiles,
+		additions: added,
+		deletions: deleted,
+		diff:      diff,
+	}
 }
 
 // CycleDisplay cycles through available display modes and re-renders.
@@ -787,7 +856,7 @@ func buildDifftCmd(gitCmd string, width int, dftDisplay string, pathArgs []strin
 	return cmd
 }
 
-func diffFileDifft(node *cachedNode, width int, display DisplayMode, gitCmd string) tea.Cmd {
+func diffFileDifft(node *cachedNode, width int, display DisplayMode, gitCmd string, gen uint64) tea.Cmd {
 	if width == 0 || node == nil || len(node.files) != 1 {
 		return nil
 	}
@@ -798,10 +867,10 @@ func diffFileDifft(node *cachedNode, width int, display DisplayMode, gitCmd stri
 	if file.IsNew || file.IsDelete {
 		dftDisplay = "inline"
 	}
-	return streamDifftCmd(gitCmd, width, dftDisplay, filePathArgs(file), key, "")
+	return streamDifftCmd(gitCmd, width, dftDisplay, filePathArgs(file), key, "", gen)
 }
 
-func diffDirDifft(dir *cachedNode, width int, display DisplayMode, gitCmd string, preamble string) tea.Cmd {
+func diffDirDifft(dir *cachedNode, width int, display DisplayMode, gitCmd string, preamble string, gen uint64) tea.Cmd {
 	if width == 0 || dir == nil {
 		return nil
 	}
@@ -813,11 +882,11 @@ func diffDirDifft(dir *cachedNode, width int, display DisplayMode, gitCmd string
 		paths = []string{dir.path + "/"}
 	}
 
-	return streamDifftCmd(gitCmd, width, dftDisplay, paths, key, preamble)
+	return streamDifftCmd(gitCmd, width, dftDisplay, paths, key, preamble, gen)
 }
 
 // streamDifftCmd runs a difft command and streams its output in chunks.
-func streamDifftCmd(gitCmd string, width int, dftDisplay string, pathArgs []string, cacheKey string, preamble string) tea.Cmd {
+func streamDifftCmd(gitCmd string, width int, dftDisplay string, pathArgs []string, cacheKey string, preamble string, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		cmd := buildDifftCmd(gitCmd, width, dftDisplay, pathArgs)
 		log.Debug("difft stream cmd", "args", cmd.Args)
@@ -868,26 +937,26 @@ func streamDifftCmd(gitCmd string, width int, dftDisplay string, pathArgs []stri
 		// Read first chunk
 		chunk, ok := <-ch
 		if !ok {
-			return difftStreamMsg{cacheKey: cacheKey, done: true, buf: buf}
+			return difftStreamMsg{cacheKey: cacheKey, done: true, buf: buf, generation: gen}
 		}
 		if chunk.err != nil {
 			return common.ErrMsg{Err: chunk.err}
 		}
-		return difftStreamMsg{ch: ch, cacheKey: cacheKey, chunk: prefix + chunk.text, buf: buf}
+		return difftStreamMsg{ch: ch, cacheKey: cacheKey, chunk: prefix + chunk.text, buf: buf, generation: gen}
 	}
 }
 
 // readNextChunk returns a tea.Cmd that reads the next chunk from a difft stream channel.
-func readNextChunk(ch <-chan difftChunk, key string, buf *strings.Builder) tea.Cmd {
+func readNextChunk(ch <-chan difftChunk, key string, buf *strings.Builder, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		chunk, ok := <-ch
 		if !ok {
-			return difftStreamMsg{cacheKey: key, done: true, buf: buf}
+			return difftStreamMsg{cacheKey: key, done: true, buf: buf, generation: gen}
 		}
 		if chunk.err != nil {
 			return common.ErrMsg{Err: chunk.err}
 		}
-		return difftStreamMsg{ch: ch, cacheKey: key, chunk: chunk.text, buf: buf}
+		return difftStreamMsg{ch: ch, cacheKey: key, chunk: chunk.text, buf: buf, generation: gen}
 	}
 }
 
@@ -947,13 +1016,60 @@ type diffContentMsg struct {
 	text     string
 }
 
+// stripDisplaySuffix removes the display mode suffix from a cache key to get the base path.
+func stripDisplaySuffix(key string) string {
+	for _, suffix := range []string{":sbsb", ":sbs"} {
+		if strings.HasSuffix(key, suffix) {
+			return strings.TrimSuffix(key, suffix)
+		}
+	}
+	return key
+}
+
+// InvalidateFiles selectively removes cache entries for the given file paths
+// and their parent directories, preserving unchanged entries.
+func (m *Model) InvalidateFiles(paths []string) {
+	m.generation++
+
+	// Remove per-file difft cache entries
+	for _, p := range paths {
+		delete(m.difftFileCache, p)
+	}
+
+	// Build set of paths to invalidate: files + parent dirs + root
+	pathSet := map[string]bool{"/": true}
+	for _, p := range paths {
+		pathSet[p] = true
+		dir := filepath.Dir(p)
+		for dir != "." && dir != "/" {
+			pathSet[dir] = true
+			dir = filepath.Dir(dir)
+		}
+	}
+
+	// Remove matching node cache and inflight entries
+	for key := range m.cache {
+		if pathSet[stripDisplaySuffix(key)] {
+			delete(m.cache, key)
+			delete(m.inflight, key)
+		}
+	}
+
+	// Reset root parsing state
+	m.rootParsed = 0
+	m.rootLastPath = ""
+	m.rootLastOffset = 0
+}
+
 func (m *Model) ClearCache() {
+	m.generation++
 	m.cache = make(nodeCache)
 	m.inflight = make(map[string]bool)
 	m.difftFileCache = make(map[string]string)
 	m.rootParsed = 0
 	m.rootLastPath = ""
 	m.rootLastOffset = 0
+	m.scopedFiles = nil
 }
 
 func (m *Model) RootDiffStats() (int64, int64) {
