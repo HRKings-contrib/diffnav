@@ -20,6 +20,31 @@ import (
 
 const dirHeaderHeight = 3
 
+// DisplayMode controls how diffs are rendered.
+type DisplayMode int
+
+const (
+	DisplayInline             DisplayMode = iota // unified / inline
+	DisplaySideBySide                            // side-by-side
+	DisplaySideBySideShowBoth                    // side-by-side-show-both (difft only)
+)
+
+// DifftDisplayString returns the DFT_DISPLAY value for difftastic.
+func (d DisplayMode) DifftDisplayString() string {
+	switch d {
+	case DisplaySideBySide:
+		return "side-by-side"
+	case DisplaySideBySideShowBoth:
+		return "side-by-side-show-both"
+	default:
+		return "inline"
+	}
+}
+
+func (d DisplayMode) IsSideBySide() bool {
+	return d != DisplayInline
+}
+
 type cachedNode struct {
 	path      string
 	files     []*gitdiff.File
@@ -30,23 +55,27 @@ type cachedNode struct {
 
 type nodeCache map[string]*cachedNode
 
-func cacheKey(path string, sideBySide bool) string {
-	if sideBySide {
+func cacheKey(path string, display DisplayMode) string {
+	switch display {
+	case DisplaySideBySide:
 		return path + ":sbs"
+	case DisplaySideBySideShowBoth:
+		return path + ":sbsb"
+	default:
+		return path
 	}
-	return path
 }
 
 type Model struct {
 	common.Common
-	vp         viewport.Model
-	file       *cachedNode
-	dir        *cachedNode
-	cache      nodeCache
-	sideBySide bool
-	preamble   string
-	useDifft   bool
-	gitCmd     string
+	vp       viewport.Model
+	file     *cachedNode
+	dir      *cachedNode
+	cache    nodeCache
+	display  DisplayMode
+	preamble string
+	useDifft bool
+	gitCmd   string
 }
 
 // SetPreamble stores the preamble text (e.g. commit metadata from git show).
@@ -61,10 +90,14 @@ func (m *Model) SetDifft(gitCmd string) {
 }
 
 func New(sideBySide bool) Model {
+	display := DisplayInline
+	if sideBySide {
+		display = DisplaySideBySide
+	}
 	return Model{
-		vp:         viewport.Model{},
-		sideBySide: sideBySide,
-		cache:      map[string]*cachedNode{},
+		vp:      viewport.Model{},
+		display: display,
+		cache:   map[string]*cachedNode{},
 	}
 }
 
@@ -131,7 +164,7 @@ func (m Model) contentWidth() int {
 
 func (m *Model) diff() tea.Cmd {
 	if m.file != nil {
-		key := cacheKey(m.file.path, m.sideBySide)
+		key := cacheKey(m.file.path, m.display)
 		if cached, ok := m.cache[key]; ok && cached.diff != "" {
 			m.file = cached
 			m.vp.SetContent(cached.diff)
@@ -146,11 +179,11 @@ func (m *Model) diff() tea.Cmd {
 		m.file = node
 		m.cache[key] = node
 		if m.useDifft {
-			return diffFileDifft(node, m.contentWidth(), m.sideBySide, m.gitCmd)
+			return diffFileDifft(node, m.contentWidth(), m.display, m.gitCmd)
 		}
-		return diffFile(node, m.contentWidth(), m.sideBySide)
+		return diffFile(node, m.contentWidth(), m.display)
 	} else if m.dir != nil {
-		key := cacheKey(m.dir.path, m.sideBySide)
+		key := cacheKey(m.dir.path, m.display)
 		if cached, ok := m.cache[key]; ok && cached.diff != "" {
 			m.dir = cached
 			m.vp.SetContent(cached.diff)
@@ -169,9 +202,9 @@ func (m *Model) diff() tea.Cmd {
 			preamble = m.preamble
 		}
 		if m.useDifft {
-			return diffDirDifft(node, m.contentWidth(), m.sideBySide, m.gitCmd, preamble)
+			return diffDirDifft(node, m.contentWidth(), m.display, m.gitCmd, preamble)
 		}
-		return diffDir(node, m.contentWidth(), m.sideBySide, preamble)
+		return diffDir(node, m.contentWidth(), m.display, preamble)
 	}
 
 	return nil
@@ -224,7 +257,7 @@ func (m Model) SetFilePatch(file *gitdiff.File) (Model, tea.Cmd) {
 	m.dir = nil
 
 	fname := filenode.GetFileName(file)
-	key := cacheKey(fname, m.sideBySide)
+	key := cacheKey(fname, m.display)
 	if cached, ok := m.cache[key]; ok {
 		m.file = cached
 		m.vp.SetContent(cached.diff)
@@ -243,15 +276,15 @@ func (m Model) SetFilePatch(file *gitdiff.File) (Model, tea.Cmd) {
 	m.cache[key] = m.file
 
 	if m.useDifft {
-		return m, diffFileDifft(m.file, m.contentWidth(), m.sideBySide, m.gitCmd)
+		return m, diffFileDifft(m.file, m.contentWidth(), m.display, m.gitCmd)
 	}
-	return m, diffFile(m.file, m.contentWidth(), m.sideBySide)
+	return m, diffFile(m.file, m.contentWidth(), m.display)
 }
 
 func (m Model) SetDirPatch(dirPath string, files []*gitdiff.File) (Model, tea.Cmd) {
 	m.file = nil
 
-	key := cacheKey(dirPath, m.sideBySide)
+	key := cacheKey(dirPath, m.display)
 	if cached, ok := m.cache[key]; ok {
 		m.dir = cached
 		m.vp.SetContent(cached.diff)
@@ -276,19 +309,36 @@ func (m Model) SetDirPatch(dirPath string, files []*gitdiff.File) (Model, tea.Cm
 		preamble = m.preamble
 	}
 	if m.useDifft {
-		return m, diffDirDifft(m.dir, m.contentWidth(), m.sideBySide, m.gitCmd, preamble)
+		return m, diffDirDifft(m.dir, m.contentWidth(), m.display, m.gitCmd, preamble)
 	}
-	return m, diffDir(m.dir, m.contentWidth(), m.sideBySide, preamble)
+	return m, diffDir(m.dir, m.contentWidth(), m.display, preamble)
 }
 
 func (m *Model) GoToTop() {
 	m.vp.GotoTop()
 }
 
-// SetSideBySide updates the diff view mode and re-renders.
-func (m *Model) SetSideBySide(sideBySide bool) tea.Cmd {
-	m.sideBySide = sideBySide
+// SetDisplayMode updates the diff view mode and re-renders.
+func (m *Model) SetDisplayMode(display DisplayMode) tea.Cmd {
+	m.display = display
 	return m.diff()
+}
+
+// CycleDisplay cycles through available display modes and re-renders.
+// In difft mode: inline → side-by-side → side-by-side-show-both → inline.
+// In delta mode: inline → side-by-side → inline.
+func (m *Model) CycleDisplay() tea.Cmd {
+	if m.useDifft {
+		m.display = (m.display + 1) % 3
+	} else {
+		m.display = (m.display + 1) % 2
+	}
+	return m.diff()
+}
+
+// DisplayMode returns the current display mode.
+func (m *Model) DisplayMode() DisplayMode {
+	return m.display
 }
 
 // ScrollUp scrolls the viewport up by the given number of lines.
@@ -301,16 +351,16 @@ func (m *Model) ScrollDown(lines int) {
 	m.vp.ScrollDown(lines)
 }
 
-func diffFile(node *cachedNode, width int, sideBySide bool) tea.Cmd {
+func diffFile(node *cachedNode, width int, display DisplayMode) tea.Cmd {
 	if width == 0 || node == nil || len(node.files) != 1 {
 		return nil
 	}
 
 	file := node.files[0]
-	key := cacheKey(node.path, sideBySide)
+	key := cacheKey(node.path, display)
 	return func() tea.Msg {
-		// Only use side-by-side if preference is true AND file is not new/deleted
-		useSideBySide := sideBySide && !file.IsNew && !file.IsDelete
+		// Only use side-by-side if preference is set AND file is not new/deleted
+		useSideBySide := display.IsSideBySide() && !file.IsNew && !file.IsDelete
 		args := []string{
 			"--paging=never",
 			fmt.Sprintf("-w=%d", width),
@@ -330,15 +380,15 @@ func diffFile(node *cachedNode, width int, sideBySide bool) tea.Cmd {
 	}
 }
 
-func diffDir(dir *cachedNode, width int, sideBySide bool, preamble string) tea.Cmd {
+func diffDir(dir *cachedNode, width int, display DisplayMode, preamble string) tea.Cmd {
 	if width == 0 || dir == nil {
 		return nil
 	}
-	key := cacheKey(dir.path, sideBySide)
+	key := cacheKey(dir.path, display)
 	return func() tea.Msg {
 		s := common.BgStyles[common.Selected]
 		c := common.LipglossColorToHex(common.Colors[common.Selected])
-		useSideBySide := sideBySide
+		useSideBySide := display.IsSideBySide()
 		args := []string{
 			"--paging=never",
 			fmt.Sprintf("--file-modified-label=%s",
@@ -375,17 +425,17 @@ func diffDir(dir *cachedNode, width int, sideBySide bool, preamble string) tea.C
 	}
 }
 
-func diffFileDifft(node *cachedNode, width int, sideBySide bool, gitCmd string) tea.Cmd {
+func diffFileDifft(node *cachedNode, width int, display DisplayMode, gitCmd string) tea.Cmd {
 	if width == 0 || node == nil || len(node.files) != 1 {
 		return nil
 	}
 
 	file := node.files[0]
-	key := cacheKey(node.path, sideBySide)
+	key := cacheKey(node.path, display)
 	return func() tea.Msg {
-		display := "inline"
-		if sideBySide && !file.IsNew && !file.IsDelete {
-			display = "side-by-side"
+		dftDisplay := display.DifftDisplayString()
+		if file.IsNew || file.IsDelete {
+			dftDisplay = "inline"
 		}
 
 		pathArgs := ""
@@ -399,7 +449,7 @@ func diffFileDifft(node *cachedNode, width int, sideBySide bool, gitCmd string) 
 		cmd.Env = append(os.Environ(),
 			"GIT_EXTERNAL_DIFF=difft",
 			fmt.Sprintf("DFT_WIDTH=%d", width),
-			fmt.Sprintf("DFT_DISPLAY=%s", display),
+			fmt.Sprintf("DFT_DISPLAY=%s", dftDisplay),
 			"DFT_COLOR=always",
 		)
 		out, err := cmd.Output()
@@ -410,21 +460,18 @@ func diffFileDifft(node *cachedNode, width int, sideBySide bool, gitCmd string) 
 	}
 }
 
-func diffDirDifft(dir *cachedNode, width int, sideBySide bool, gitCmd string, preamble string) tea.Cmd {
+func diffDirDifft(dir *cachedNode, width int, display DisplayMode, gitCmd string, preamble string) tea.Cmd {
 	if width == 0 || dir == nil {
 		return nil
 	}
-	key := cacheKey(dir.path, sideBySide)
+	key := cacheKey(dir.path, display)
 	return func() tea.Msg {
-		display := "inline"
-		if sideBySide {
-			display = "side-by-side"
-		}
+		dftDisplay := display.DifftDisplayString()
 
 		env := append(os.Environ(),
 			"GIT_EXTERNAL_DIFF=difft",
 			fmt.Sprintf("DFT_WIDTH=%d", width),
-			fmt.Sprintf("DFT_DISPLAY=%s", display),
+			fmt.Sprintf("DFT_DISPLAY=%s", dftDisplay),
 			"DFT_COLOR=always",
 		)
 
@@ -512,7 +559,7 @@ func (m *Model) ClearCache() {
 }
 
 func (m *Model) RootDiffStats() (int64, int64) {
-	if item, ok := m.cache[cacheKey("/", m.sideBySide)]; ok {
+	if item, ok := m.cache[cacheKey("/", m.display)]; ok {
 		return item.additions, item.deletions
 	}
 

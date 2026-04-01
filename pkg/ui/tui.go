@@ -249,8 +249,8 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, keys.ToggleIconStyle):
 			m.cycleIconStyle()
 		case key.Matches(msg, keys.ToggleDiffView):
-			m.sideBySide = !m.sideBySide
-			cmd = m.diffViewer.SetSideBySide(m.sideBySide)
+			cmd = m.diffViewer.CycleDisplay()
+			m.sideBySide = m.diffViewer.DisplayMode().IsSideBySide()
 			cmds = append(cmds, cmd)
 		case key.Matches(msg, keys.SwitchPanel):
 			if m.isShowingFileTree {
